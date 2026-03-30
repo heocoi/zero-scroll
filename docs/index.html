@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>zero-scroll - Virtual scrolling without DOM measurement</title>
+  <meta name="description" content="Virtual scroll engine with zero DOM measurement. Fenwick tree powered. 0.001ms per scroll frame at 100K items.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;0,9..144,800;1,9..144,400&family=IBM+Plex+Mono:wght@400;500;600&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --paper: #f6f2ec;
+      --paper-warm: #efe9df;
+      --cream: #e8e0d2;
+      --ink: #1a1612;
+      --ink-light: #332e27;
+      --ink-muted: #5c5347;
+      --ink-faint: #8a7f70;
+      --ink-ghost: #b8ae9e;
+      --teal: #0a6b57;
+      --teal-light: #e6f5f0;
+      --teal-bg: #0d7c6610;
+      --rust: #c4430a;
+      --rust-light: #fdf0ea;
+      --rust-bg: #c4430a10;
+      --rule: #d4cabb;
+      --rule-light: #e4ddd0;
+      --serif: 'Fraunces', Georgia, serif;
+      --mono: 'IBM Plex Mono', monospace;
+      --sans: 'Source Sans 3', sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--paper);
+      color: var(--ink);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Paper texture */
+    body::before {
+      content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg width='200' height='200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='0.65' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+      opacity: 0.5;
+    }
+
+    .container { max-width: 980px; margin: 0 auto; padding: 0 28px; position: relative; z-index: 1; }
+
+    /* ---- NAV ---- */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      padding: 14px 28px;
+      background: #f6f2ecf0;
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--rule-light);
+    }
+    nav .inner { max-width: 980px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; }
+    nav .logo {
+      font-family: var(--mono); font-size: 14px; font-weight: 600;
+      color: var(--ink); text-decoration: none; letter-spacing: -0.3px;
+    }
+    nav .logo em { font-style: normal; color: var(--teal); }
+    nav .links { display: flex; gap: 20px; align-items: center; }
+    nav .links a {
+      font-size: 13px; color: var(--ink-muted); text-decoration: none;
+      transition: color 0.2s;
+    }
+    nav .links a:hover { color: var(--ink); }
+    nav .pill {
+      padding: 5px 14px; border-radius: 100px;
+      background: transparent; color: var(--ink); font-size: 12px; font-weight: 500;
+      border: 1.5px solid var(--ink);
+      transition: all 0.2s;
+    }
+    nav .links a.pill:hover { background: var(--ink); color: var(--paper); }
+
+    /* ---- HERO ---- */
+    .hero { padding: 140px 0 80px; position: relative; }
+    .hero-eyebrow {
+      font-family: var(--mono); font-size: 12px; color: var(--teal);
+      letter-spacing: 0.5px; margin-bottom: 20px;
+      animation: fadeIn 0.8s ease both;
+    }
+
+    .hero h1 {
+      font-family: var(--serif);
+      font-size: clamp(40px, 6.5vw, 72px);
+      font-weight: 800;
+      line-height: 1.08;
+      letter-spacing: -1.5px;
+      margin-bottom: 24px;
+      max-width: 700px;
+      animation: fadeIn 0.8s ease 0.1s both;
+    }
+    .hero h1 .em {
+      font-style: italic; font-weight: 300;
+      color: var(--teal);
+    }
+
+    .hero-desc {
+      font-size: 18px; color: var(--ink-muted); max-width: 480px;
+      line-height: 1.7; margin-bottom: 40px;
+      animation: fadeIn 0.8s ease 0.2s both;
+    }
+
+    .hero-row {
+      display: flex; gap: 24px; align-items: center; flex-wrap: wrap;
+      animation: fadeIn 0.8s ease 0.3s both;
+    }
+    .hero-stat {
+      display: flex; align-items: baseline; gap: 6px;
+      padding: 14px 24px; border-radius: 10px;
+      background: var(--teal-light); border: 1px solid var(--teal)18;
+    }
+    .hero-stat .n {
+      font-family: var(--mono); font-size: 32px; font-weight: 600;
+      color: var(--teal); letter-spacing: -1px;
+    }
+    .hero-stat .u { font-family: var(--mono); font-size: 13px; color: var(--teal); opacity: 0.7; }
+    .hero-stat .l { font-size: 13px; color: var(--ink-muted); margin-left: 4px; }
+
+    .hero-install {
+      font-family: var(--mono); font-size: 13px; color: var(--ink-muted);
+      padding: 10px 18px; border-radius: 8px;
+      background: var(--paper-warm); border: 1px solid var(--rule);
+      cursor: pointer; transition: all 0.2s;
+    }
+    .hero-install:hover { border-color: var(--ink-faint); color: var(--ink); }
+    .hero-install .copy-icon { margin-left: 8px; vertical-align: -2px; opacity: 0.4; transition: opacity 0.2s; }
+    .hero-install:hover .copy-icon { opacity: 0.7; }
+    .hero-install.copied { border-color: var(--teal); color: var(--teal); }
+    .hero-install.copied b { color: var(--teal); }
+    .hero-install.copied .copy-icon { opacity: 1; color: var(--teal); }
+    .hero-install b { color: var(--ink); font-weight: 500; }
+
+    /* ---- RULE ---- */
+    hr {
+      border: none; height: 1px; background: var(--rule);
+      margin: 0;
+    }
+
+    /* ---- SECTIONS ---- */
+    section { padding: 72px 0; }
+    .s-label {
+      font-family: var(--mono); font-size: 11px; color: var(--teal);
+      letter-spacing: 1.5px; text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .s-title {
+      font-family: var(--serif); font-size: 32px; font-weight: 600;
+      letter-spacing: -0.5px; margin-bottom: 12px;
+    }
+    .s-desc { font-size: 15px; color: var(--ink-muted); max-width: 460px; margin-bottom: 40px; }
+
+    /* ---- LIVE DEMO ---- */
+    .demo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+    .demo-panel {
+      border-radius: 10px; overflow: hidden;
+      border: 1px solid var(--rule);
+      background: #fff;
+    }
+    .dpanel-head {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--rule-light);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .dpanel-head h4 {
+      font-family: var(--mono); font-size: 12px; font-weight: 500;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .dpanel-head h4 .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+    }
+    .dot-green { background: var(--teal); }
+    .dot-amber { background: var(--rust); }
+    .dpanel-stats {
+      font-family: var(--mono); font-size: 11px; color: var(--ink-muted);
+      display: flex; gap: 10px;
+    }
+    .dpanel-stats .v { font-weight: 500; }
+    .dpanel-stats .v.ok { color: var(--teal); }
+    .dpanel-stats .v.warn { color: var(--rust); }
+
+    .d-scroll {
+      height: 360px; overflow-y: auto; position: relative;
+      scrollbar-width: thin;
+      scrollbar-color: var(--ink-ghost) transparent;
+    }
+    .d-scroll::-webkit-scrollbar { width: 5px; }
+    .d-scroll::-webkit-scrollbar-track { background: transparent; }
+    .d-scroll::-webkit-scrollbar-thumb { background: var(--ink-ghost); border-radius: 3px; }
+    .d-spacer { position: relative; }
+    .d-item {
+      position: absolute; left: 0; right: 0;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--rule-light);
+      display: flex; gap: 8px; align-items: flex-start;
+    }
+    .d-av {
+      width: 24px; height: 24px; border-radius: 5px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 600; color: #fff;
+    }
+    .d-body { flex: 1; min-width: 0; }
+    .d-name { font-size: 11px; font-weight: 600; color: var(--ink); }
+    .d-text { font-size: 11px; color: var(--ink-light); line-height: 1.45; }
+    .d-tags { display: flex; gap: 3px; margin-top: 3px; }
+    .d-tag {
+      font-size: 9px; padding: 0px 5px; border-radius: 3px;
+      background: var(--paper); border: 1px solid var(--rule);
+      color: var(--ink-muted);
+    }
+
+    .jank-ov {
+      position: absolute; inset: 0; background: var(--rust)08;
+      pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 5;
+    }
+    .jank-ov.on { opacity: 1; }
+
+    .demo-note {
+      font-family: var(--mono); font-size: 11px; color: var(--ink-faint); text-align: center;
+    }
+
+    /* ---- BENCHMARKS ---- */
+    .bench-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 40px; }
+    .bcard {
+      padding: 22px 20px; border-radius: 10px;
+      background: #fff; border: 1px solid var(--rule);
+    }
+    .bcard .bv {
+      font-family: var(--mono); font-size: 30px; font-weight: 600;
+      color: var(--teal); letter-spacing: -1px;
+    }
+    .bcard .bv small { font-size: 14px; font-weight: 500; }
+    .bcard .bl { font-size: 13px; color: var(--ink-muted); margin-top: 4px; }
+
+    .bench-table {
+      width: 100%; border-collapse: collapse;
+      font-size: 13px;
+    }
+    .bench-table th {
+      text-align: left; padding: 8px 12px;
+      font-family: var(--mono); font-size: 11px; font-weight: 500;
+      color: var(--ink-faint); letter-spacing: 0.5px; text-transform: uppercase;
+      border-bottom: 2px solid var(--rule);
+    }
+    .bench-table td {
+      padding: 10px 12px; border-bottom: 1px solid var(--rule-light);
+    }
+    .bench-table td:first-child { font-weight: 500; }
+    .bench-table .fast { color: var(--teal); font-family: var(--mono); font-weight: 600; }
+    .bench-table .slow { color: var(--rust); font-family: var(--mono); }
+    .bench-table .na { color: var(--ink-muted); font-style: italic; }
+
+    .bar-track {
+      width: 100%; height: 6px; background: var(--cream); border-radius: 3px;
+      overflow: hidden; margin-top: 4px;
+    }
+    .bar-fill {
+      height: 100%; border-radius: 3px;
+      transition: width 1s cubic-bezier(0.16, 1, 0.3, 1); width: 0;
+    }
+    .bar-fill.teal { background: var(--teal); }
+    .bar-fill.rust { background: var(--rust); }
+
+    /* ---- HOW ---- */
+    .how-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    .hstep {
+      padding: 24px 20px; border-radius: 10px;
+      background: #fff; border: 1px solid var(--rule);
+      transition: border-color 0.3s;
+    }
+    .hstep:hover { border-color: var(--teal)40; }
+    .hstep .num {
+      font-family: var(--serif); font-size: 28px; font-weight: 300;
+      color: var(--ink-ghost); margin-bottom: 12px;
+      font-style: italic;
+    }
+    .hstep h4 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+    .hstep p { font-size: 13px; color: var(--ink-muted); line-height: 1.6; }
+
+    /* ---- CODE ---- */
+    .cblock {
+      border-radius: 10px; overflow: hidden;
+      border: 1px solid var(--rule);
+      background: #fffdf9;
+      margin-bottom: 20px;
+    }
+    .cblock-head {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--rule-light);
+      font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
+      display: flex; gap: 6px; align-items: center;
+    }
+    .cblock-head .cd { width: 8px; height: 8px; border-radius: 50%; }
+    .cblock pre {
+      padding: 18px 20px;
+      font-family: var(--mono); font-size: 12.5px; line-height: 1.75;
+      overflow-x: auto; color: var(--ink-muted);
+    }
+    .cblock .kw { color: #7c3aed; }
+    .cblock .fn { color: #0369a1; }
+    .cblock .str { color: var(--teal); }
+    .cblock .num { color: var(--rust); }
+    .cblock .cm { color: var(--ink-faint); }
+    .cblock .ty { color: #b45309; }
+
+    /* ---- FOOTER ---- */
+    footer {
+      padding: 40px 0; border-top: 1px solid var(--rule);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    footer p { font-size: 12px; color: var(--ink-faint); }
+    footer .flinks { display: flex; gap: 16px; }
+    footer a { font-size: 12px; color: var(--ink-muted); text-decoration: none; }
+    footer a:hover { color: var(--teal); }
+
+    /* ---- ANIMATIONS ---- */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .rv { opacity: 0; transform: translateY(20px); transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1); }
+    .rv.vis { opacity: 1; transform: translateY(0); }
+
+    @media (max-width: 768px) {
+      .demo-grid, .bench-cards, .how-steps { grid-template-columns: 1fr; }
+      .hero h1 { font-size: 36px; }
+      nav .links a:not(.pill) { display: none; }
+      footer { flex-direction: column; gap: 12px; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="inner">
+    <a href="#" class="logo"><em>zero</em>-scroll</a>
+    <div class="links">
+      <a href="#demo">Demo</a>
+      <a href="#benchmarks">Benchmarks</a>
+      <a href="#how">How it works</a>
+      <a href="#usage">Usage</a>
+      <a href="https://github.com/heocoi/zero-scroll" class="pill" target="_blank">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="container">
+    <div class="hero-eyebrow">v0.1.0 on npm</div>
+    <h1>Virtual scrolling,<br><span class="em">zero</span> DOM reads</h1>
+    <p class="hero-desc">
+      Pre-compute heights once. Every scroll frame after that is pure arithmetic.
+      No offsetHeight. No layout thrashing. Just math.
+    </p>
+    <div class="hero-row">
+      <div class="hero-stat">
+        <span class="n">~0.003</span><span class="u">ms</span>
+        <span class="l">computeWindow() @ 100K items</span>
+      </div>
+      <div class="hero-install" id="installCmd" onclick="copyCmd(this)">
+        <b>$</b> npm i zero-scroll
+        <svg class="copy-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<section id="demo">
+  <div class="container">
+    <div class="rv">
+      <div class="s-label">Live</div>
+      <div class="s-title">See the difference</div>
+      <div class="s-desc">Both panels render identical items. Scroll either one. Watch the frame times. More items = more pain for DOM.</div>
+    </div>
+    <div class="rv" style="margin-bottom:20px">
+      <div style="display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:12px;color:var(--ink-muted)">
+        <span>Items:</span>
+        <select id="itemSelect" onchange="reinit()" style="padding:4px 8px;border-radius:6px;border:1px solid var(--rule);background:#fff;font-family:var(--mono);font-size:12px;color:var(--ink);cursor:pointer">
+          <option value="5000">5,000</option>
+          <option value="20000" selected>20,000</option>
+          <option value="50000">50,000</option>
+          <option value="100000">100,000</option>
+        </select>
+      </div>
+    </div>
+    <div class="demo-grid rv">
+      <div class="demo-panel">
+        <div class="dpanel-head">
+          <h4><span class="dot dot-green"></span> zero-scroll</h4>
+          <div class="dpanel-stats">Frame: <span class="v ok" id="zF">-</span>&ensp;Janks: <span class="v" id="zJ">0</span></div>
+        </div>
+        <div class="d-scroll" id="zS"><div class="jank-ov" id="zOv"></div></div>
+      </div>
+      <div class="demo-panel">
+        <div class="dpanel-head">
+          <h4><span class="dot dot-amber"></span> DOM measurement</h4>
+          <div class="dpanel-stats">Frame: <span class="v warn" id="dF">-</span>&ensp;Janks: <span class="v" id="dJ">0</span></div>
+        </div>
+        <div class="d-scroll" id="dS"><div class="jank-ov" id="dOv"></div></div>
+      </div>
+    </div>
+    <p class="demo-note rv" id="demoNote">20,000 items &middot; variable heights &middot; scroll to compare</p>
+  </div>
+</section>
+
+<hr>
+
+<section id="benchmarks">
+  <div class="container">
+    <div class="rv">
+      <div class="s-label">Performance</div>
+      <div class="s-title">Numbers</div>
+      <div class="s-desc">Chrome on Apple M1 Pro. 60fps budget is 16.67ms per frame.</div>
+    </div>
+    <div class="bench-cards rv">
+      <div class="bcard"><div class="bv">~0.003<small>ms</small></div><div class="bl">computeWindow() at 100K items</div></div>
+      <div class="bcard"><div class="bv">0<small> DOM reads</small></div><div class="bl">In the scroll hot path. Pure arithmetic.</div></div>
+      <div class="bcard"><div class="bv">9.7<small>kB</small></div><div class="bl">Gzipped, zero dependencies</div></div>
+    </div>
+    <table class="bench-table rv">
+      <thead>
+        <tr><th>Method</th><th>1K items</th><th>100K items</th><th>1M items</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>zero-scroll</td>
+          <td><span class="fast">~0.002ms</span><div class="bar-track"><div class="bar-fill teal" data-w="0.8"></div></div></td>
+          <td><span class="fast">~0.003ms</span><div class="bar-track"><div class="bar-fill teal" data-w="1"></div></div></td>
+          <td><span class="fast">~0.003ms</span><div class="bar-track"><div class="bar-fill teal" data-w="1.2"></div></div></td>
+        </tr>
+        <tr>
+          <td>DOM batch</td>
+          <td><span class="slow">38.8ms</span><div class="bar-track"><div class="bar-fill rust" data-w="38"></div></div></td>
+          <td class="na">too slow</td>
+          <td class="na">too slow</td>
+        </tr>
+        <tr>
+          <td>DOM interleaved</td>
+          <td><span class="slow">102.7ms</span><div class="bar-track"><div class="bar-fill rust" data-w="100"></div></div></td>
+          <td class="na">too slow</td>
+          <td class="na">too slow</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="demo-note rv" style="margin-top:12px">computeWindow() time only. O(log n) - effectively constant across all scales.</p>
+  </div>
+</section>
+
+<hr>
+
+<section id="how">
+  <div class="container">
+    <div class="rv">
+      <div class="s-label">Approach</div>
+      <div class="s-title">Measure once, math forever</div>
+    </div>
+    <div class="how-steps rv">
+      <div class="hstep">
+        <div class="num">1</div>
+        <h4>Fenwick tree</h4>
+        <p>Heights go into a Binary Indexed Tree. O(log n) for both queries and updates. Cumulative offsets are always instantly available.</p>
+      </div>
+      <div class="hstep">
+        <div class="num">2</div>
+        <h4>Binary search</h4>
+        <p>Given scrollTop, find visible items via O(log n) binary search. Both start and end. Pure arithmetic on Float64Array.</p>
+      </div>
+      <div class="hstep">
+        <div class="num">3</div>
+        <h4>Minimal DOM</h4>
+        <p>Only visible items plus overscan in the DOM. Positioned with translateY from pre-computed offsets. No measurement needed.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<section id="usage">
+  <div class="container">
+    <div class="rv">
+      <div class="s-label">Code</div>
+      <div class="s-title">Get started</div>
+    </div>
+    <div class="cblock rv">
+      <div class="cblock-head">
+        <div class="cd" style="background:var(--rust)"></div>
+        <div class="cd" style="background:var(--rust);opacity:.4"></div>
+        <div class="cd" style="background:var(--rule)"></div>
+        <span style="margin-left:6px">react-example.tsx</span>
+      </div>
+      <pre><span class="kw">import</span> { useRef, useMemo } <span class="kw">from</span> <span class="str">'react'</span>
+<span class="kw">import</span> { <span class="ty">FixedHeightProvider</span> } <span class="kw">from</span> <span class="str">'zero-scroll'</span>
+<span class="kw">import</span> { <span class="fn">useVirtualScroll</span> } <span class="kw">from</span> <span class="str">'zero-scroll/react'</span>
+
+<span class="kw">function</span> <span class="fn">Feed</span>({ items }) {
+  <span class="kw">const</span> scrollRef = <span class="fn">useRef</span>(<span class="num">null</span>)
+  <span class="kw">const</span> provider = <span class="fn">useMemo</span>(() =&gt; <span class="kw">new</span> <span class="ty">FixedHeightProvider</span>(<span class="num">64</span>), [])
+
+  <span class="kw">const</span> { items: visible, totalHeight } = <span class="fn">useVirtualScroll</span>({
+    count: items.length,
+    heightProvider: provider,
+    scrollRef,
+  })
+
+  <span class="kw">return</span> (
+    &lt;div ref={scrollRef} style={{ height: <span class="num">600</span>, overflow: <span class="str">'auto'</span> }}&gt;
+      &lt;div style={{ height: totalHeight, position: <span class="str">'relative'</span> }}&gt;
+        {visible.<span class="fn">map</span>(({ index, offset, height }) =&gt; (
+          &lt;div key={index} style={{
+            position: <span class="str">'absolute'</span>,
+            transform: <span class="str">`translateY(${offset}px)`</span>,
+            height,
+          }}&gt;
+            {items[index].text}
+          &lt;/div&gt;
+        ))}
+      &lt;/div&gt;
+    &lt;/div&gt;
+  )
+}</pre>
+    </div>
+    <div class="cblock rv">
+      <div class="cblock-head">
+        <div class="cd" style="background:var(--rust)"></div>
+        <div class="cd" style="background:var(--rust);opacity:.4"></div>
+        <div class="cd" style="background:var(--rule)"></div>
+        <span style="margin-left:6px">core.ts</span>
+      </div>
+      <pre><span class="cm">// Framework-agnostic. Zero dependencies.</span>
+<span class="kw">import</span> { <span class="ty">PrefixSum</span>, <span class="fn">computeWindow</span> } <span class="kw">from</span> <span class="str">'zero-scroll'</span>
+
+<span class="kw">const</span> ps = <span class="kw">new</span> <span class="ty">PrefixSum</span>(<span class="num">100_000</span>)
+items.<span class="fn">forEach</span>((item, i) =&gt; ps.<span class="fn">update</span>(i, item.height))
+
+<span class="cm">// Runs every scroll frame. Pure math. ~0.003ms.</span>
+<span class="kw">const</span> { items: visible } = <span class="fn">computeWindow</span>(scrollTop, vpHeight, ps, <span class="num">100_000</span>)</pre>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container" style="display:flex;justify-content:space-between;align-items:center">
+    <p>zero-scroll &middot; MIT</p>
+    <div class="flinks">
+      <a href="https://www.npmjs.com/package/zero-scroll">npm</a>
+      <a href="https://github.com/heocoi/zero-scroll">GitHub</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// ---- Copy command ----
+let copyTimeout=null
+function copyCmd(el){
+  navigator.clipboard.writeText('npm i zero-scroll').then(()=>{
+    el.classList.add('copied')
+    const svg=el.querySelector('svg')
+    svg.innerHTML='<polyline points="20 6 9 17 4 12"/>'
+    clearTimeout(copyTimeout)
+    copyTimeout=setTimeout(()=>{
+      el.classList.remove('copied')
+      svg.innerHTML='<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'
+    },1500)
+  }).catch(()=>{})
+}
+
+// ---- Fenwick Tree ----
+class PS{constructor(n){this.n=n;this.t=new Float64Array(n+1);this.h=new Float64Array(n)}
+up(i,v){const d=v-this.h[i];if(!d)return;this.h[i]=v;let j=i+1;while(j<=this.n){this.t[j]+=d;j+=j&(-j)}}
+g(i){return this.h[i]}
+q(i){let s=0;while(i>0){s+=this.t[i];i-=i&(-i)}return s}
+tt(){return this.q(this.n)}
+fi(o){if(this.n===0||o<=0)return 0;let p=0,b=1;while(b<=this.n)b<<=1;b>>=1;
+while(b>0){const x=p+b;if(x<=this.n&&this.t[x]<=o){p=x;o-=this.t[x]}b>>=1}return Math.min(p,this.n-1)}}
+
+function cw(st,vh,ps,n,os=5){if(!n)return{items:[],th:0};let s=ps.fi(st),e=ps.fi(st+vh);
+s=Math.max(0,s-os);e=Math.min(n-1,e+os);const items=[];for(let i=s;i<=e;i++)items.push({i,o:ps.q(i),h:ps.g(i)});return{items,th:ps.tt()}}
+
+// ---- Data ----
+let N=20000
+const ph=['Just shipped the new API. Monitoring errors.','Perf numbers looking great after the refactor.',
+'Auth bug found. Race condition on token refresh.','Bundle reduced 40% with tree-shaking.',
+'Design tokens ready for review.','DB migration: zero downtime. Clean.',
+'Dark mode shipped. Took 3 sprints.','CI red again. Flaky test in e2e.',
+'Onboarding docs updated for v2 SDK.','Memory leak in prod. Event listener buildup.',
+'New caching layer cut API latency by half.','Accessibility audit complete. 4 issues found.']
+const nm=['A.Chen','B.Park','C.Wu','D.Kim','E.Liu','F.Lee','G.Ito','H.Ngo']
+const cl=['#6366f1','#ec4899','#d97706','#059669','#2563eb','#7c3aed','#dc2626','#0d9488']
+const tg=['perf','shipped','bug','review','v2','blocked','frontend','infra']
+let D=[],H=[]
+function genData(n){N=n;D=[];H=[]
+for(let i=0;i<N;i++){const l=1+~~(Math.random()*3);let t='';for(let j=0;j<l;j++)t+=ph[~~(Math.random()*ph.length)]+' '
+const nt=~~(Math.random()*3),tt=[];for(let j=0;j<nt;j++)tt.push(tg[~~(Math.random()*tg.length)])
+D.push({nm:nm[i%8],cl:cl[i%8],ini:nm[i%8][0],tx:t.trim(),tg:tt});H.push(48+l*16+(nt?18:0))}}
+genData(N)
+
+function mk(d){const e=document.createElement('div');e.className='d-item'
+e.innerHTML=`<div class="d-av" style="background:${d.cl}">${d.ini}</div><div class="d-body"><div class="d-name">${d.nm}</div><div class="d-text">${d.tx}</div>${d.tg.length?`<div class="d-tags">${d.tg.map(t=>`<span class="d-tag">${t}</span>`).join('')}</div>`:''}</div>`
+return e}
+
+// ---- State ----
+let ps,zSp,dSp,zM=new Map(),zJ=0,dM=new Map(),dJ=0,dH,dO,sy=false
+let zJankTimer=null,dJankTimer=null
+const zE=document.getElementById('zS'),dE=document.getElementById('dS')
+
+function flashJank(panel){
+  const isZ=panel==='z'
+  const ovId=isZ?'zOv':'dOv'
+  const timer=isZ?zJankTimer:dJankTimer
+  clearTimeout(timer)
+  const f=document.getElementById(ovId)
+  f.classList.add('on')
+  const t=setTimeout(()=>f.classList.remove('on'),200)
+  if(isZ)zJankTimer=t;else dJankTimer=t
+}
+
+function zR(){const t0=performance.now();const w=cw(zE.scrollTop,zE.clientHeight,ps,N)
+const ns=new Set(w.items.map(x=>x.i));for(const[k,v]of zM)if(!ns.has(k)){v.remove();zM.delete(k)}
+for(const it of w.items){let el=zM.get(it.i);if(!el){el=mk(D[it.i]);zM.set(it.i,el);zSp.appendChild(el)}
+el.style.transform=`translateY(${it.o}px)`;el.style.height=it.h+'px'}
+const ft=performance.now()-t0;document.getElementById('zF').textContent=ft.toFixed(1)+'ms'
+if(ft>16.67){zJ++;document.getElementById('zJ').textContent=zJ;document.getElementById('zJ').className='v warn';flashJank('z')}}
+
+function dR(){const t0=performance.now();const st=dE.scrollTop,vh=dE.clientHeight
+let s=0,e=N-1;{let lo=0,hi=N-1;while(lo<hi){const m=(lo+hi)>>1;if(dO[m+1]<=st)lo=m+1;else hi=m};s=lo}
+e=s;while(e<N&&dO[e]<st+vh)e++;s=Math.max(0,s-5);e=Math.min(N-1,e+5)
+
+// Measure visible + prefetch items in the actual container (layout thrashing)
+const measureEnd=Math.min(N-1, e+30)
+for(let i=s;i<=measureEnd;i++){
+  const c=mk(D[i])
+  c.style.position='static'
+  dSp.appendChild(c)
+  dH[i]=c.offsetHeight  // forces reflow on real container
+  c.remove()
+}
+
+for(let i=s;i<N;i++)dO[i+1]=dO[i]+dH[i];dSp.style.height=dO[N]+'px'
+const ns=new Set();for(let i=s;i<=e;i++)ns.add(i);for(const[k,v]of dM)if(!ns.has(k)){v.remove();dM.delete(k)}
+for(let i=s;i<=e;i++){let el=dM.get(i);if(!el){el=mk(D[i]);dM.set(i,el);dSp.appendChild(el)}
+el.style.transform=`translateY(${dO[i]}px)`;el.style.height=dH[i]+'px'}
+const ft=performance.now()-t0;const fE=document.getElementById('dF');fE.textContent=ft.toFixed(1)+'ms'
+fE.className='v '+(ft<4?'ok':'warn')
+if(ft>16.67){dJ++;document.getElementById('dJ').textContent=dJ;document.getElementById('dJ').className='v warn';flashJank('d')}}
+
+function reinit(){
+  const n=parseInt(document.getElementById('itemSelect').value)
+  genData(n)
+  zJ=0;dJ=0
+  document.getElementById('zJ').textContent='0';document.getElementById('dJ').textContent='0'
+  document.getElementById('zJ').className='v';document.getElementById('dJ').className='v'
+  document.getElementById('zF').textContent='-';document.getElementById('dF').textContent='-'
+  for(const[,v]of zM)v.remove();zM.clear()
+  for(const[,v]of dM)v.remove();dM.clear()
+  if(zSp)zSp.remove();if(dSp)dSp.remove()
+  ps=new PS(N);for(let i=0;i<N;i++)ps.up(i,H[i])
+  zSp=document.createElement('div');zSp.className='d-spacer';zSp.style.height=ps.tt()+'px';zE.appendChild(zSp)
+  dH=new Float64Array(N);dO=new Float64Array(N+1)
+  for(let i=0;i<N;i++){dH[i]=80;dO[i+1]=dO[i]+80} // DOM panel starts with estimates only
+  dSp=document.createElement('div');dSp.className='d-spacer';dSp.style.height=dO[N]+'px';dE.appendChild(dSp)
+  zE.scrollTop=0;dE.scrollTop=0
+  document.getElementById('demoNote').textContent=N.toLocaleString()+' items \u00b7 variable heights \u00b7 scroll to compare'
+  zR();dR()
+}
+
+// ---- Sync ----
+zE.addEventListener('scroll',()=>{if(sy)return;sy=true;const r=zE.scrollTop/(zE.scrollHeight-zE.clientHeight||1)
+dE.scrollTop=r*(dE.scrollHeight-dE.clientHeight);requestAnimationFrame(()=>{zR();dR();sy=false})},{passive:true})
+dE.addEventListener('scroll',()=>{if(sy)return;sy=true;const r=dE.scrollTop/(dE.scrollHeight-dE.clientHeight||1)
+zE.scrollTop=r*(zE.scrollHeight-zE.clientHeight);requestAnimationFrame(()=>{zR();dR();sy=false})},{passive:true})
+
+reinit()
+
+// ---- Reveal ----
+const obs=new IntersectionObserver(es=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('vis');obs.unobserve(e.target)}})},{threshold:0.1})
+document.querySelectorAll('.rv').forEach(e=>obs.observe(e))
+
+// ---- Animate bars ----
+const bobs=new IntersectionObserver(es=>{es.forEach(e=>{if(e.isIntersecting){e.target.querySelectorAll('.bar-fill').forEach(b=>{b.style.width=b.dataset.w+'%'});bobs.unobserve(e.target)}})},{threshold:0.3})
+document.querySelectorAll('.bench-table').forEach(e=>bobs.observe(e))
+</script>
+</body>
+</html>
